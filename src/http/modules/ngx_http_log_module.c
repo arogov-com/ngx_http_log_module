@@ -1905,5 +1905,13 @@ ngx_http_log_init(ngx_conf_t *cf)
 
     *h = ngx_http_log_handler;
 
+
+    h = ngx_array_push(&cmcf->phases[NGX_HTTP_POST_READ_PHASE].handlers);
+    if (h == NULL) {
+        return NGX_ERROR;
+    }
+
+    *h = ngx_http_log_handler;
+
     return NGX_OK;
 }
