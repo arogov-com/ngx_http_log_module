@@ -69,6 +69,7 @@ typedef struct {
     ngx_syslog_peer_t          *syslog_peer;
     ngx_http_log_fmt_t         *format;
     ngx_http_complex_value_t   *filter;
+    ngx_flag_t                  post_read;
 } ngx_http_log_t;
 
 
@@ -251,7 +252,7 @@ static ngx_http_log_var_t  ngx_http_log_vars[] = {
 
 
 static ngx_int_t
-ngx_http_log_handler(ngx_http_request_t *r)
+ngx_http_log_handler(ngx_http_request_t *r, ngx_int_t post_read)
 {
     u_char                   *line, *p;
     size_t                    len, size;
@@ -274,6 +275,10 @@ ngx_http_log_handler(ngx_http_request_t *r)
 
     log = lcf->logs->elts;
     for (l = 0; l < lcf->logs->nelts; l++) {
+
+        if (log[l].post_read != post_read) {
+            continue;
+        }
 
         if (log[l].filter) {
             if (ngx_http_complex_value(r, log[l].filter, &val) != NGX_OK) {
@@ -399,6 +404,20 @@ ngx_http_log_handler(ngx_http_request_t *r)
     }
 
     return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_log_handler_default(ngx_http_request_t *r)
+{
+    return ngx_http_log_handler(r, 0);
+}
+
+
+static ngx_int_t
+ngx_http_log_handler_postread(ngx_http_request_t *r)
+{
+    return ngx_http_log_handler(r, 1);
 }
 
 
@@ -1282,7 +1301,13 @@ ngx_http_log_set_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_memzero(log, sizeof(ngx_http_log_t));
 
 
-    if (ngx_strncmp(value[1].data, "syslog:", 7) == 0) {
+    ngx_uint_t arg_shift = 0;
+    if (ngx_strncmp(value[1].data, "post_read", 8) == 0) {
+        log->post_read = 1;
+        arg_shift = 1;
+    }
+
+    if (ngx_strncmp(value[1 + arg_shift].data, "syslog:", 7) == 0) {
 
         peer = ngx_pcalloc(cf->pool, sizeof(ngx_syslog_peer_t));
         if (peer == NULL) {
@@ -1298,16 +1323,16 @@ ngx_http_log_set_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         goto process_formats;
     }
 
-    n = ngx_http_script_variables_count(&value[1]);
+    n = ngx_http_script_variables_count(&value[1 + arg_shift]);
 
     if (n == 0) {
-        log->file = ngx_conf_open_file(cf->cycle, &value[1]);
+        log->file = ngx_conf_open_file(cf->cycle, &value[1 + arg_shift]);
         if (log->file == NULL) {
             return NGX_CONF_ERROR;
         }
 
     } else {
-        if (ngx_conf_full_name(cf->cycle, &value[1], 0) != NGX_OK) {
+        if (ngx_conf_full_name(cf->cycle, &value[1 + arg_shift], 0) != NGX_OK) {
             return NGX_CONF_ERROR;
         }
 
@@ -1319,7 +1344,7 @@ ngx_http_log_set_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         ngx_memzero(&sc, sizeof(ngx_http_script_compile_t));
 
         sc.cf = cf;
-        sc.source = &value[1];
+        sc.source = &value[1 + arg_shift];
         sc.lengths = &log->script->lengths;
         sc.values = &log->script->values;
         sc.variables = n;
@@ -1333,8 +1358,8 @@ ngx_http_log_set_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
 process_formats:
 
-    if (cf->args->nelts >= 3) {
-        name = value[2];
+    if (cf->args->nelts >= 3 + arg_shift) {
+        name = value[2 + arg_shift];
 
         if (ngx_strcmp(name.data, "combined") == 0) {
             lmcf->combined_used = 1;
@@ -1365,7 +1390,11 @@ process_formats:
     flush = 0;
     gzip = 0;
 
-    for (i = 3; i < cf->args->nelts; i++) {
+    for (i = 3 + arg_shift; i < cf->args->nelts; i++) {
+        // if (ngx_strncmp(value[i].data, "post_read", 8) == 0) {
+        //     log->post_read = 1;
+        //     continue;
+        // }
 
         if (ngx_strncmp(value[i].data, "buffer=", 7) == 0) {
             s.len = value[i].len - 7;
@@ -1903,7 +1932,7 @@ ngx_http_log_init(ngx_conf_t *cf)
         return NGX_ERROR;
     }
 
-    *h = ngx_http_log_handler;
+    *h = ngx_http_log_handler_default;
 
 
     h = ngx_array_push(&cmcf->phases[NGX_HTTP_POST_READ_PHASE].handlers);
@@ -1911,7 +1940,7 @@ ngx_http_log_init(ngx_conf_t *cf)
         return NGX_ERROR;
     }
 
-    *h = ngx_http_log_handler;
+    *h = ngx_http_log_handler_postread;
 
     return NGX_OK;
 }
